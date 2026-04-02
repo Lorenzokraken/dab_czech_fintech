@@ -55,7 +55,7 @@ TRANS_PATH    = f"{STORAGE_ROOT}/transactions"
 CHECKPOINT    = f"{STORAGE_ROOT}/checkpoints/bronze_transactions"
 
 def ingest_static(table_name, source_path):
-    spark.read.csv(source_path, header=True, sep=";").withColumn("_ingestion_ts", current_timestamp()).write.mode("overwrite").saveAsTable(f"{CATALOG}.{BRONZE_SCHEMA}.{table_name}")
+    spark.read.csv(source_path, header=True, sep=";").withColumn("_ingestion_ts", current_timestamp()).write.mode("overwrite").option("mergeSchema", "true").saveAsTable(f"{CATALOG}.{BRONZE_SCHEMA}.{table_name}")
 
 tables = ["account",
           "client",
@@ -71,14 +71,8 @@ for table in tables:
 
 # COMMAND ----------
 
-df = spark.sql("SELECT * FROM {CATALOG}.{BRONZE_SCHEMA}.account LIMIT 10")
-
+df = spark.sql(f"SELECT * FROM {CATALOG}.{BRONZE_SCHEMA}.account LIMIT 10")
 display(df)
-
-# COMMAND ----------
-
-
-
 
 # COMMAND ----------
 
