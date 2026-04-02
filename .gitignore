@@ -1,0 +1,33 @@
+# Secrets
+.env
+*.tfvars
+!*.tfvars.example
+
+# Terraform
+azure/.terraform/
+azure/*.tfstate
+azure/*.tfstate.backup
+azure/.terraform.lock.hcl
+
+# Databricks
+databricks_dab/.databricks/
+
+DOCS/*
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Binari e installer
+*.msi
+
+# Dati CSV locali (già su ADLS)
+financial-anonymized-transactions/
+
+# File temporanei DAB
+databricks_dab/job.json

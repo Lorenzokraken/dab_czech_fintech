@@ -1,0 +1,64 @@
+{
+  "id": "/subscriptions/7db342d3-972a-4b80-bc7d-a6aa5e91eb73/resourceGroups/li-rg/providers/Microsoft.Resources/deployments/li-rg_databricks-czech-fintech",
+  "name": "li-rg_databricks-czech-fintech",
+  "type": "Microsoft.Resources/deployments",
+  "properties": {
+    "templateHash": "284196642934917238",
+    "parameters": {
+      "location": {
+        "type": "String",
+        "value": "eastus"
+      },
+      "workspaceName": {
+        "type": "String",
+        "value": "databricks-czech-fintech"
+      },
+      "tier": {
+        "type": "String",
+        "value": "premium"
+      },
+      "tagValues": {
+        "type": "Object",
+        "value": {}
+      },
+      "managedResourceGroupName": {
+        "type": "String",
+        "value": "li-rg-managed"
+      },
+      "computeMode": {
+        "type": "String",
+        "value": "Hybrid"
+      },
+      "enableNoPublicIp": {
+        "type": "Bool",
+        "value": true
+      }
+    },
+    "mode": "Incremental",
+    "debugSetting": {
+      "detailLevel": "None"
+    },
+    "provisioningState": "Running",
+    "timestamp": "2026-04-01T12:04:32.9988214Z",
+    "duration": "PT22.6945673S",
+    "correlationId": "690e6c81-9984-400e-bb8c-c58353bc34ce",
+    "providers": [
+      {
+        "namespace": "Microsoft.Databricks",
+        "resourceTypes": [
+          {
+            "resourceType": "workspaces",
+            "locations": [
+              "eastus"
+            ]
+          }
+        ]
+      }
+    ],
+    "dependencies": [],
+    "validationLevel": "Template"
+  },
+  "tags": {
+    "primaryResourceId": "/subscriptions/7db342d3-972a-4b80-bc7d-a6aa5e91eb73/resourceGroups/li-rg/providers/Microsoft.Databricks/workspaces/databricks-czech-fintech"
+  }
+}
