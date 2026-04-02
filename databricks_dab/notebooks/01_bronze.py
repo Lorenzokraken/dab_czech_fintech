@@ -2,13 +2,50 @@
 # MAGIC %md
 # MAGIC # Bronze Layer — Czech Fintech
 # MAGIC
-# MAGIC Ingestion raw da ADLS → Delta tables in czech_fintech.bronze
-# MAGIC Nessun cast logico: tutto StringType. I cast vengono fatti in Silver.
+# MAGIC Questo notebook gestisce l'ingestion raw nel layer Bronze.
+# MAGIC Nessuna trasformazione logica: i dati arrivano as-is dalla landing zone ADLS.
+# MAGIC Si aggiungono solo colonne di metadata tecnico (_ingestion_ts, _source_file).
+# MAGIC
+# MAGIC **Input:**  `abfss://raw@czechfintechdata.dfs.core.windows.net/`
+# MAGIC **Output:** `czech_fintech.bronze.*` (Delta tables)
+# MAGIC
+# MAGIC Tabelle prodotte:
+# MAGIC - `bronze.account`, `bronze.client`, `bronze.card`
+# MAGIC - `bronze.disp`, `bronze.district`, `bronze.loan`, `bronze.order`
+# MAGIC - `bronze.transactions` (Auto Loader, partizionata per year/month)
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## 0. Configurazione
+# MAGIC
+# MAGIC Centralizza qui tutti i path e i nomi.
+# MAGIC Se cambia lo storage o il catalog, modifichi solo questa cella.
+# MAGIC Queste variabili saranno poi parametrizzabili via DAB widgets.
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## 1. Ingestion Statici — Batch
+# MAGIC
+# MAGIC I 7 file statici (account, client, card, disp, district, loan, order)
+# MAGIC vengono letti con `read_files()` e scritti come Delta table in modalità `overwrite`.
+# MAGIC
+# MAGIC Sono dati dimensionali stabili — overwrite è sufficiente, non serve CDC.
+# MAGIC
+# MAGIC **Cose da sapere prima di scrivere il codice:**
+# MAGIC - Separatore CSV: `;` (non virgola)
+# MAGIC - Tutti i valori categorici sono in ceco (PRIJEM, VYDAJ, ecc.) — lasciali as-is in Bronze
+# MAGIC - Il campo `date` nelle transazioni è formato YYMMDD (es. 930101 = 1 gen 1993) — NON parsarlo qui, lo farai in Silver
+# MAGIC - Aggiungi sempre `_ingestion_ts` (current_timestamp) e `_source_file` (input_file_name)
+# MAGIC
+# MAGIC **Docs:**
+# MAGIC - read_files: https://docs.databricks.com/en/sql/language-manual/functions/read_files.html
+# MAGIC - withColumn / current_timestamp: https://spark.apache.org/docs/latest/api/python/reference/pyspark.sql/functions.html
 
 # COMMAND ----------
 
 from pyspark.sql.functions import current_timestamp
-from pyspark.sql.types import StructType, StructField, StringType
 
 CATALOG       = "czech_fintech"
 BRONZE_SCHEMA = "bronze"
@@ -17,139 +54,129 @@ STATIC_PATH   = f"{STORAGE_ROOT}/static"
 TRANS_PATH    = f"{STORAGE_ROOT}/transactions"
 CHECKPOINT    = f"{STORAGE_ROOT}/checkpoints/bronze_transactions"
 
+def ingest_static(table_name, source_path):
+    spark.read.csv(source_path, header=True, sep=";").withColumn("_ingestion_ts", current_timestamp()).write.mode("overwrite").saveAsTable(f"{CATALOG}.{BRONZE_SCHEMA}.{table_name}")
+
+tables = ["account",
+          "client",
+          "card",
+          "disp",
+          "district",
+          "loan",
+          "order"]
+
+
+for table in tables:
+    ingest_static(table, f"{STATIC_PATH}/{table}.csv")
+
+# COMMAND ----------
+
+df = spark.sql("SELECT * FROM {CATALOG}.{BRONZE_SCHEMA}.account LIMIT 10")
+
+display(df)
+
+# COMMAND ----------
+
+
+
+
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Schema espliciti — tutti StringType
+# MAGIC ## 2. Ingestion Transazioni — Auto Loader
 # MAGIC
-# MAGIC Perché StringType ovunque: Bronze è un mirror fedele del CSV.
-# MAGIC Se castiamo qui e un valore non converte, perdiamo la riga.
-# MAGIC In Bronze non si perde niente — i cast vengono fatti in Silver con controllo esplicito.
+# MAGIC Le transazioni (trans_0.csv ... trans_105.csv) vengono ingerate con Auto Loader
+# MAGIC in modalità `trigger(availableNow=True)`: legge tutti i file disponibili al momento
+# MAGIC dell'esecuzione e si ferma — comportamento batch ma con tracking incrementale.
 # MAGIC
-# MAGIC Note sui dati:
-# MAGIC - district: header usa codici A1..A16, non nomi descrittivi (è il dataset originale)
-# MAGIC - card.issued: ha formato "YYMMDD HH:MM:SS" — lasciamo stringa, Silver lo parserà
-# MAGIC - client.birth_number: codice ceco YYMMDD o YYMM+50DD per donne — stringa, non data
-
-# COMMAND ----------
-
-schemas = {
-    "account": StructType([
-        StructField("account_id",   StringType()),  # PK
-        StructField("district_id",  StringType()),  # FK → district
-        StructField("frequency",    StringType()),  # "POPLATEK MESICNE" ecc
-        StructField("date",         StringType()),  # YYMMDD — apertura conto
-    ]),
-    "client": StructType([
-        StructField("client_id",    StringType()),  # PK
-        StructField("birth_number", StringType()),  # YYMMDD (F: YYMM+50DD)
-        StructField("district_id",  StringType()),  # FK → district
-    ]),
-    "card": StructType([
-        StructField("card_id",  StringType()),  # PK
-        StructField("disp_id",  StringType()),  # FK → disp
-        StructField("type",     StringType()),  # classic / gold
-        StructField("issued",   StringType()),  # "YYMMDD HH:MM:SS"
-    ]),
-    "disp": StructType([
-        StructField("disp_id",    StringType()),  # PK
-        StructField("client_id",  StringType()),  # FK → client
-        StructField("account_id", StringType()),  # FK → account
-        StructField("type",       StringType()),  # OWNER / DISPONENT
-    ]),
-    "district": StructType([
-        StructField("A1",  StringType()),  # district_id (header originale)
-        StructField("A2",  StringType()),  # nome distretto
-        StructField("A3",  StringType()),  # regione
-        StructField("A4",  StringType()),  # popolazione
-        StructField("A5",  StringType()),  # comuni <499 abitanti
-        StructField("A6",  StringType()),  # comuni 500-1999
-        StructField("A7",  StringType()),  # comuni 2000-9999
-        StructField("A8",  StringType()),  # comuni >10000
-        StructField("A9",  StringType()),  # n° città
-        StructField("A10", StringType()),  # % urbano
-        StructField("A11", StringType()),  # salario medio
-        StructField("A12", StringType()),  # tasso disoccupazione 1995
-        StructField("A13", StringType()),  # tasso disoccupazione 1996
-        StructField("A14", StringType()),  # n° imprenditori per 1000 ab
-        StructField("A15", StringType()),  # crimini 1995
-        StructField("A16", StringType()),  # crimini 1996
-    ]),
-    "loan": StructType([
-        StructField("loan_id",    StringType()),  # PK
-        StructField("account_id", StringType()),  # FK → account
-        StructField("date",       StringType()),  # YYMMDD — erogazione
-        StructField("amount",     StringType()),  # importo totale
-        StructField("duration",   StringType()),  # mesi
-        StructField("payments",   StringType()),  # rata mensile
-        StructField("status",     StringType()),  # A/B/C/D
-    ]),
-    "order": StructType([
-        StructField("order_id",    StringType()),  # PK
-        StructField("account_id",  StringType()),  # FK → account
-        StructField("bank_to",     StringType()),  # banca destinataria
-        StructField("account_to",  StringType()),  # conto destinatario
-        StructField("amount",      StringType()),  # importo
-        StructField("k_symbol",    StringType()),  # causale (SIPO ecc)
-    ]),
-}
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## Ingestion Statici — Batch
+# MAGIC **Perché Auto Loader e non spark.read normale?**
+# MAGIC Auto Loader mantiene un checkpoint su ADLS che traccia quali file ha già processato.
+# MAGIC Se domani carichi altri 10 CSV nella cartella transactions/, riesegui il notebook
+# MAGIC e lui legge SOLO i nuovi. Con spark.read rileggeresti tutto da capo ogni volta.
+# MAGIC Questo simula un pattern di ingestion incrementale reale (es. feed giornaliero).
 # MAGIC
-# MAGIC La funzione legge ogni CSV con schema esplicito e lo scrive come Delta table.
-# MAGIC `mergeSchema=False` perché lo schema è sotto nostro controllo — se cambia, vogliamo saperlo subito.
+# MAGIC **Partizionamento:**
+# MAGIC Il campo `date` è YYMMDD (stringa). Devi estrarre year e month per partizionare.
+# MAGIC Esempio: "930101" → year=1993, month=1
+# MAGIC Hint: puoi usare substring() + cast() oppure to_date() con format "yyMMdd"
+# MAGIC
+# MAGIC **Docs:**
+# MAGIC - Auto Loader: https://docs.databricks.com/en/ingestion/cloud-object-storage/auto-loader/index.html
+# MAGIC - trigger(availableNow): https://docs.databricks.com/en/structured-streaming/triggers.html
+# MAGIC - partitionBy: https://spark.apache.org/docs/latest/api/python/reference/pyspark.sql/api/pyspark.sql.DataFrameWriter.partitionBy.html
 
 # COMMAND ----------
 
-def ingest_static(table_name, source_path, schema):
-    df = (
-        spark.read
-            .option("header", "true")
-            .option("sep", ";")
-            .schema(schema)
-            .csv(source_path)
-            .withColumn("_ingestion_ts", current_timestamp())
-    )
-    (
-        df.write
-            .format("delta")
-            .mode("overwrite")
-            .option("overwriteSchema", "true")
-            .saveAsTable(f"{CATALOG}.{BRONZE_SCHEMA}.{table_name}")
-    )
-    count = spark.table(f"{CATALOG}.{BRONZE_SCHEMA}.{table_name}").count()
-    print(f"✅ {table_name}: {count} righe")
+def ingest_transactions():
+    spark.readStream.format("cloudFiles") \
+        .option("cloudFiles.format", "csv") \
+        .option("header", True) \
+        .option("sep", ";") \
+        .option("inferSchema", True) \
+        .load("/mnt/landing/transactions") \
+        .withColumn("_ingestion_ts", F.current_timestamp()) \
+        .withColumn("date", F.to_date(F.col("date"), "YYMMDD")) \
+        .withColumn("year", F.year(F.col("date"))) \
+        .withColumn("month", F.month(F.col("date"))) \
+        .writeStream \
+        .format("delta") \
+        .outputMode("append") \
+        .trigger(availableNow=True) \
+        .option("checkpointLocation", CHECKPOINT) \
+        .partitionBy("year", "month") \
+        .table(f"{CATALOG}.{BRONZE_DB}.transactions")
+ingest_transactions()
+spark.table(f"{CATALOG}.{BRONZE_DB}.transactions").count()
+
+
+
+# La funzione deve:
+# 1. Usare spark.readStream con format="cloudFiles"
+#    - cloudFiles.format = "csv"
+#    - header = true, sep = ";"
+#    - inferSchema = true (o definisci schema esplicito se preferisci)
+# 2. Aggiungere _ingestion_ts
+# 3. Parsare il campo date (YYMMDD) ed estrarre colonne year e month
+#    (servono per partitionBy — NON per logica business, quello è compito di Silver)
+# 4. Scrivere in streaming con:
+#    - format = "delta"
+#    - outputMode = "append"
+#    - trigger(availableNow=True)
+#    - checkpointLocation = CHECKPOINT
+#    - partitionBy("year", "month")
+#    - table("czech_fintech.bronze.transactions")
+# 5. Chiamare .awaitTermination() per aspettare che il job finisca
+#
+# Atteso dopo l'esecuzione:
+# - Delta table czech_fintech.bronze.transactions
+# - Partizionata per year/month (1993-1998 circa)
+# - Solo i 3 CSV caricati ora. Se ne aggiungi altri e riesegui → solo i nuovi vengono letti
+# - Verifica con: spark.table("czech_fintech.bronze.transactions").count()
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Esecuzione
+# MAGIC ## 3. Verifica finale
+# MAGIC
+# MAGIC Esegui questa cella dopo aver completato le sezioni 1 e 2.
+# MAGIC Controlla che tutte le tabelle esistano e abbiano righe.
 
 # COMMAND ----------
 
-for table_name, schema in schemas.items():
-    ingest_static(
-        table_name  = table_name,
-        source_path = f"{STATIC_PATH}/{table_name}.csv",
-        schema      = schema
-    )
+# TODO: scrivi una cella di verifica che:
+# 1. Fa un loop su tutte le 8 tabelle bronze (7 statici + transactions)
+# 2. Per ognuna stampa: nome tabella, numero righe, colonne presenti
+#
+# Hint: spark.catalog.tableExists("czech_fintech.bronze.account")
+# Hint: spark.table("...").count()
+#
+# Atteso:
+# bronze.account      → ~4500 righe
+# bronze.client       → ~5369 righe
+# bronze.card         → ~892 righe
+# bronze.disp         → ~5369 righe
+# bronze.district     → ~77 righe
+# bronze.loan         → ~682 righe
+# bronze.order        → ~6471 righe
+# bronze.transactions → subset dei 3 CSV caricati (verifica con count)
 
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## Verifica
-
-# COMMAND ----------
-
-# MAGIC %sql
-# MAGIC SELECT 'account'  AS tbl, COUNT(*) AS n FROM czech_fintech.bronze.account  UNION ALL
-# MAGIC SELECT 'client',          COUNT(*)       FROM czech_fintech.bronze.client   UNION ALL
-# MAGIC SELECT 'card',            COUNT(*)       FROM czech_fintech.bronze.card     UNION ALL
-# MAGIC SELECT 'disp',            COUNT(*)       FROM czech_fintech.bronze.disp     UNION ALL
-# MAGIC SELECT 'district',        COUNT(*)       FROM czech_fintech.bronze.district UNION ALL
-# MAGIC SELECT 'loan',            COUNT(*)       FROM czech_fintech.bronze.loan     UNION ALL
-# MAGIC SELECT 'order',           COUNT(*)       FROM czech_fintech.bronze.`order`
-# MAGIC ORDER BY tbl;
