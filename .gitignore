@@ -19,6 +19,8 @@ __pycache__/
 *.pyc
 .venv/
 
+PROJECT.md
+
 # OS
 .DS_Store
 Thumbs.db
