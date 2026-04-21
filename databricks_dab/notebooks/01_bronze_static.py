@@ -24,7 +24,7 @@
 
 # COMMAND ----------
 
-from pyspark.sql.functions import current_timestamp
+from pyspark.sql.functions import current_timestamp, lit
 
 CATALOG       = "czech_fintech"
 BRONZE_SCHEMA = "bronze"
