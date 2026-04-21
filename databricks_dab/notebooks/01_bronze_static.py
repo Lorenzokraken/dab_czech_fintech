@@ -35,8 +35,7 @@ CHECKPOINT    = f"{STORAGE_ROOT}/checkpoints/bronze_transactions"
 
 def ingest_static(table_name, source_path):
     spark.read.csv(source_path, header=True, sep=";").withColumn("_ingestion_ts", current_timestamp()).withColumn("_source_file", lit(source_path)).write.mode("overwrite").saveAsTable(f"{CATALOG}.{BRONZE_SCHEMA}.{table_name}")
-spark.read.csv(source_path, header=True, sep=";") \
-    .withColumn("_ingestion_ts", current_timestamp()) \
+
     
 tables = ["account",
           "client",
